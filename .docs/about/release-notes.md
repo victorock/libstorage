@@ -4,6 +4,36 @@ Release early, release often
 
 ---
 
+## Version 0.1.5 (2016/07/12)
+This release comes hot on the heels of the last, but some dynamite bug fixes
+have improved the performance of the server by leaps and bounds. Operations
+that were taking minutes now take seconds or less. Memory consumption that
+could exceed 50GB is now kept neat and tidy.
+
+### Bug Fixes
+* Task service memory fix ([#225](https://github.com/emccode/libstorage/issues/225))
+* Context logger optimizations ([#224](https://github.com/emccode/libstorage/issues/224))
+
+### Enhancements
+* Improved volume path caching ([#227](https://github.com/emccode/libstorage/issues/227))
+* Make Gometalinter optional ([#223](https://github.com/emccode/libstorage/issues/223))
+
+
+## Version 0.1.4 (2016/07/08)
+This update provides a major performance improvement as well as a few other,
+minor bug fixes and enhancements.
+
+### Bug Fixes
+* Performance degradation bug ([#218](https://github.com/emccode/libstorage/issues/218))
+* Close bug in ScaleIO driver ([#213](https://github.com/emccode/libstorage/issues/213))
+* Panic when checking attached instances with Isilon driver ([#211](https://github.com/emccode/libstorage/issues/211))
+
+### Enhancements
+* Improved build process ([#220](https://github.com/emccode/libstorage/issues/220))
+* Improved executor logging ([#217](https://github.com/emccode/libstorage/issues/217))
+* Log timestamps in ms ([#219](https://github.com/emccode/libstorage/issues/219))
+* Updated ScaleIO docs ([#214](https://github.com/emccode/libstorage/issues/214))
+
 ## Version 0.1.3 (2016/06/14)
 This is a minor update to support the release of REX-Ray 0.4.0.
 

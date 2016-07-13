@@ -6,6 +6,7 @@ import (
 	"sync"
 	"time"
 
+	log "github.com/Sirupsen/logrus"
 	"github.com/akutz/gofig"
 	"github.com/akutz/goof"
 
@@ -16,12 +17,13 @@ import (
 
 type task struct {
 	types.Task
-	ctx          types.Context
-	runFunc      types.TaskRunFunc
-	storRunFunc  types.StorageTaskRunFunc
-	storService  types.StorageService
-	resultSchema []byte
-	done         chan int
+	ctx                           types.Context
+	runFunc                       types.TaskRunFunc
+	storRunFunc                   types.StorageTaskRunFunc
+	storService                   types.StorageService
+	resultSchema                  []byte
+	resultSchemaValidationEnabled bool
+	done                          chan int
 }
 
 func newTask(ctx types.Context, schema []byte) *task {
@@ -83,30 +85,50 @@ func execTask(t *task) {
 		return
 	}
 
-	if t.Result != nil && t.resultSchema != nil {
-		var buf []byte
-		if buf, t.Error = json.Marshal(t.Result); t.Error != nil {
-			return
-		}
+	if t.Result == nil {
+		t.ctx.Debug("skipping response schema validation; result == nil")
+		return
+	}
 
-		t.Error = schema.Validate(t.ctx, t.resultSchema, buf)
-		if t.Error != nil {
-			return
-		}
+	if t.resultSchema == nil {
+		t.ctx.Debug("skipping response schema validation; schema == nil")
+		return
+	}
+
+	if !t.resultSchemaValidationEnabled {
+		t.ctx.Debug("skipping response schema validation; disabled")
+		return
+	}
+
+	var buf []byte
+	if buf, t.Error = json.Marshal(t.Result); t.Error != nil {
+		return
+	}
+
+	t.Error = schema.Validate(t.ctx, t.resultSchema, buf)
+	if t.Error != nil {
+		return
 	}
 }
 
 type globalTaskService struct {
 	sync.RWMutex
-	name   string
-	config gofig.Config
-	tasks  map[int]*task
+	name                          string
+	config                        gofig.Config
+	tasks                         map[int]*task
+	resultSchemaValidationEnabled bool
 }
 
 // Init initializes the service.
-func (s *globalTaskService) Init(config gofig.Config) error {
+func (s *globalTaskService) Init(ctx types.Context, config gofig.Config) error {
 	s.tasks = map[int]*task{}
 	s.config = config
+
+	s.resultSchemaValidationEnabled = config.GetBool(
+		types.ConfigSchemaResponseValidationEnabled)
+	ctx.WithField("enabled", s.resultSchemaValidationEnabled).Debug(
+		"configured result schema validation")
+
 	return nil
 }
 
@@ -149,6 +171,7 @@ func (s *globalTaskService) taskTrack(ctx types.Context) *task {
 			ID:        taskID,
 			QueueTime: now,
 		},
+		resultSchemaValidationEnabled: s.resultSchemaValidationEnabled,
 		ctx: ctx.WithValue(context.TaskKey, fmt.Sprintf("%d", taskID)),
 	}
 
@@ -201,10 +224,44 @@ func (s *globalTaskService) TaskWaitC(taskID int) <-chan int {
 			return
 		}
 
+		// remove the task from the queue after a configured about of time
+		defer s.taskRemoveAfter(t)
+
+		// signal that the task is complete
 		<-t.done
 	}()
 
 	return c
+}
+
+// taskRemoveAfter tells the task service to remove the task after the duration
+// specified by `libstorage.server.tasks.logTimeout`.
+func (s *globalTaskService) taskRemoveAfter(t *task) {
+	go func() {
+		logTimeoutDur, err := time.ParseDuration(
+			s.config.GetString(types.ConfigServerTasksLogTimeout))
+		if err != nil {
+			logTimeoutDur = time.Duration(time.Second * 60)
+		}
+
+		// wait to remove the task
+		time.Sleep(logTimeoutDur)
+
+		// sync access to the task map for querying its size before and after
+		// executing the delete operation on it
+		s.Lock()
+		defer s.Unlock()
+
+		t.ctx.WithFields(log.Fields{
+			"removedAfter": logTimeoutDur,
+			"tasksLen":     len(s.tasks),
+		}).Debug("removing task")
+
+		// delete the task
+		delete(s.tasks, t.ID)
+
+		t.ctx.WithField("tasksLen", len(s.tasks)).Debug("removed task")
+	}()
 }
 
 // TaskWaitAll blocks until all the specified task are complete.

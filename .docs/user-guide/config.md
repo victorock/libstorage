@@ -512,6 +512,52 @@ as well:
 `info`     | Log errors, warnings, and workflow messages
 `debug`    | Log everything
 
+### Tasks Configuration
+All operations received by the libStorage API are immediately enqueued into a
+Task Service in order to divorce the business objective from the scope of the
+HTTP request that delivered it. If a task completes before the HTTP request
+times out, the result of the task is written to the HTTP response and sent to
+the client. However, if the operation is long-lived and continues to execute
+after the original HTTP request has timed out, the goroutine running the
+operation will finish regardless.
+
+In the case of such a timeout event, the client receives an HTTP status 408 -
+Request Timeout. The HTTP response body also includes the task ID which can
+be used to monitor the state of the remote call. The following resource URI can
+be used to retrieve information about a task:
+
+```
+GET /tasks/${taskID}
+```
+
+For systems that experience heavy loads the task system can also be a source of
+potential resource issues. Because tasks are kept indefinitely at this point in
+time, too many tasks over a long period of time can result in a massive memory
+consumption, with reports of up to 50GB and more.
+
+That's why the configuration property `libstorage.server.tasks.logTimeout` is
+available to adjust how long a task is logged before it is removed from memory.
+The default value is `0` -- that is, do not log the task in memory at all.
+
+While this is in contradiction to the task retrieval example above --
+obviously a task cannot be retrieved if it is not retained -- testing and
+benchmarks have shown it is too dangerous to enable task retention by default.
+Instead tasks are removed immediately upon completion.
+
+The follow configuration example illustrates a libStorage server that keeps
+tasks logged for 10 minutes before purging them from memory:
+
+```yaml
+libstorage:
+  server:
+    tasks:
+      logTimeout: 10m
+```
+
+The `libstorage.server.tasks.logTimeout` property can be set to any value that
+is parseable by the Golang
+[time.ParseDuration](https://golang.org/pkg/time/#ParseDuration) function. For
+example, `1000ms`, `10s`, `5m`, and `1h` are all valid values.
 
 ### Driver Configuration
 There are three types of drivers:
@@ -677,13 +723,13 @@ accompanying container runtime (if this setting is false) to ensure they are
 synchronized.  
 
 #### Volume Path Cache
-In order to minimize the impact to return `Path` requests, a caching
-capability has been introduced by default. A `List` request will cause the
-returned volumes and paths to be evaluated and those with active mounts are
-recorded. Subsequent `Path` requests for volumes that have no recorded mounts
-will not result in active path lookups. Once the mount counter is initialized or
-a `List` operation occurs where a mount is recorded, the volume will be looked
-up for future `Path` operations. By default the setting is `true`.
+In order to optimize `Path` requests, the paths of actively mounted volumes
+returned as the result of a `List` request are cached. Subsequent `Path`
+requests for unmounted volumes will not dirty the cache. Only once a volume
+has been mounted will the cache be marked dirty and the volume's path retrieved
+and cached once more.
+
+The following configuration example illustrates the two path cache properties:
 
 ```yaml
 libstorage:
@@ -691,8 +737,16 @@ libstorage:
     volume:
       operations:
         path:
-          cache: false
+          cache:
+            enabled: true
+            async:   true
 ```
+
+Volume path caching is enabled and asynchronous by default, so it's possible to
+entirely omit the above configuration excerpt from a production deployment, and
+the system will still use asynchronous caching. Setting the `async` property to
+`false` simply means that the initial population of the cache will be handled
+synchronously, slowing down the program's startup time.
 
 #### Volume Root Path
 When volumes are mounted there can be an additional path that is specified to
@@ -700,7 +754,8 @@ be created and passed as the valid mount point.  This is required for certain
 applications that do not want to place data from the root of a mount point.
 
 The default is the `/data` path.  If a value is set by
-`linux.integration.volume.operations.mount.rootPath`, then the default will be overwritten.
+`linux.integration.volume.operations.mount.rootPath`, then the default will be
+overwritten.
 
 ```yaml
 libstorage:
