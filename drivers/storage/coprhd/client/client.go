@@ -38,8 +38,20 @@ func NewClient(config *CoprHDClientConfig) (*CoprHDClient, error) {
 // Init ...
 func (c *CoprHDClient) Init() (*CoprHDClient, error) {
 
-	// Init Endpoint() and Insecure
-	c.Endpoint().Insecure().Authentication()
+	// Init Endpoint()
+	if _, err := c.Endpoint(); err != nil {
+		return nil, goof.Newf("->CoprHD Client %v", err)
+	}
+
+	// Init Insecure()
+	if _, err := c.Insecure(); err != nil {
+		return nil, goof.Newf("->CoprHD Client %v", err)
+	}
+
+	// Init Authentication()
+	if _, err := c.Authentication(); err != nil {
+		return nil, goof.Newf("->CoprHD Client %v", err)
+	}
 
 	// Init Token()
 	if _, err := c.Token(); err != nil {
@@ -59,14 +71,17 @@ func (c *CoprHDClient) Init() (*CoprHDClient, error) {
 }
 
 // Endpoint Create transport Object as per user Endpoint configuration
-func (c *CoprHDClient) Endpoint() *CoprHDClient {
+func (c *CoprHDClient) Endpoint() (*CoprHDClient, error) {
+	if c.config.Endpoint() == "" {
+		return nil, goof.New("->Endpoint(): Endpoint if not configured.")
+	}
 	// Set the driver Endpoint
 	c.transport = httpclient.New(c.config.Endpoint(), "/", []string{"https"})
-	return c
+	return c, nil
 }
 
 // Insecure Set transport objects insecure as per user Insecure configuration
-func (c *CoprHDClient) Insecure() *CoprHDClient {
+func (c *CoprHDClient) Insecure() (*CoprHDClient, error) {
 
 	// Set insecure transport
 	if c.config.Insecure() {
@@ -77,27 +92,33 @@ func (c *CoprHDClient) Insecure() *CoprHDClient {
 		}
 	}
 
-	return c
+	return c, nil
 }
 
 // Authentication with username/password as per user Username/Password configuration
-func (c *CoprHDClient) Authentication() *CoprHDClient {
+func (c *CoprHDClient) Authentication() (*CoprHDClient, error) {
+	if c.config.Username() == "" || c.config.Password() == "" {
+		return nil, goof.New("->Authentication(): Username/Password is Empty")
+	}
+
 	// Set Authentication Info
 	authInfo := httpclient.BasicAuth(c.config.Username(), c.config.Password())
 
 	// Set Pointer
-	c.authInfo = &authInfo
+	c.authInfo = authInfo
 
-	return c
+	return c, nil
 }
 
 //Token Authentication with Token as per user Token configuration
 func (c *CoprHDClient) Token() (*CoprHDClient, error) {
-	// Initialize the Driver Token Header
-	authInfo := httpclient.APIKeyAuth("X-SDS-AUTH-TOKEN", "header", c.config.Token())
 
-	// Populate the Header with the token from now on
-	c.authInfo = &authInfo
+	// Initialize the Driver Token Header
+	if c.config.Token() != "" {
+		authInfo := httpclient.APIKeyAuth("X-SDS-AUTH-TOKEN", "header", c.config.Token())
+		// Populate the Header with the token from now on
+		c.authInfo = authInfo
+	}
 
 	return c, nil
 }
@@ -106,10 +127,13 @@ func (c *CoprHDClient) Token() (*CoprHDClient, error) {
 func (c *CoprHDClient) Login() (*CoprHDClient, error) {
 
 	// Initialize the Driver Login Method
-	login := httpclient.Authentication.Login(nil, c.authInfo)
+	login, err := c.client.Authentication.Login(nil, c.authInfo)
+	if err != nil {
+		return nil, goof.Newf("->Login(), %v", err)
+	}
 
 	// Populate the Header with the token from now on
-	c.authInfo = c.transport.APIKeyAuth("X-SDS-AUTH-TOKEN", "header", login.XSDSAUTHTOKEN)
+	c.authInfo = httpclient.APIKeyAuth("X-SDS-AUTH-TOKEN", "header", login.XSDSAUTHTOKEN)
 	log.Info("CoprHD Client: Login()")
 	return c, nil
 }
@@ -121,9 +145,9 @@ func (c *CoprHDClient) TaskCheck() (*CoprHDClient, error) {
 
 // Volumes Use gocoprhd to get the list of volumes
 func (c *CoprHDClient) Volumes() ([]string, error) {
-	resp := c.client.Block.ListVolumes(nil, c.authInfo)
+	resp, err := c.client.Block.ListVolumes(nil, c.authInfo)
 	if err != nil {
-		return nil, goof.Newf("Error unable to List Volumes", err)
+		return nil, goof.Newf("->ListVolumes(), %v", err)
 	}
 	return resp.Payload.ID, nil
 }

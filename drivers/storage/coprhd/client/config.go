@@ -28,7 +28,7 @@ func NewClientConfig(
 	vpool string,
 ) *CoprHDClientConfig {
 
-	c = new(Config)
+	c := new(CoprHDClientConfig)
 	c.Init()
 
 	return c
@@ -65,12 +65,12 @@ func (c *CoprHDClientConfig) Project() string {
 }
 
 // Block ...
-func (c *CoprHDClientConfig) Block() string {
+func (c *CoprHDClientConfig) Block() bool {
 	return c.block
 }
 
 // File ...
-func (c *CoprHDClientConfig) File() string {
+func (c *CoprHDClientConfig) File() bool {
 	return c.file
 }
 
