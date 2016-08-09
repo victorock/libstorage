@@ -3,6 +3,7 @@ package client
 import (
 	"crypto/tls"
 	"net/http"
+	"time"
 
 	log "github.com/Sirupsen/logrus"
 	"github.com/akutz/goof"
@@ -10,6 +11,9 @@ import (
 	httpclient "github.com/go-openapi/runtime/client"
 	"github.com/go-openapi/strfmt"
 	apiclient "github.com/victorock/gocoprhd/client"
+	apiblock "github.com/victorock/gocoprhd/client/block"
+	apivdc "github.com/victorock/gocoprhd/client/vdc"
+	apimodels "github.com/victorock/gocoprhd/models"
 )
 
 //CoprHDClient ...
@@ -29,7 +33,9 @@ func NewClient(config *CoprHDClientConfig) (*CoprHDClient, error) {
 	c.config = config
 
 	// Initialize the client
-	c.Init()
+	if _, err := c.Init(); err != nil {
+		return nil, goof.Newf("Unable Create CoprHD Client, %v", err)
+	}
 
 	log.Info("CoprHD Client: Created")
 	return c, nil
@@ -138,16 +144,184 @@ func (c *CoprHDClient) Login() (*CoprHDClient, error) {
 	return c, nil
 }
 
-// TaskCheck to CoprHD
-func (c *CoprHDClient) TaskCheck() (*CoprHDClient, error) {
-	return c, nil
+// Task return task information
+func (c *CoprHDClient) Task(taskID string) (*apimodels.Task, error) {
+
+	// Create Object to Request
+	showTaskParams := apivdc.NewShowTaskParams().WithID(taskID)
+
+	//use any function to do REST operations
+	resp, err := c.client.Vdc.ShowTask(showTaskParams, authInfo)
+	if err != nil {
+		return nil, goof.Newf("->Task(), %#v", err)
+	}
+
+	log.Infof("->Task(): %#v", resp.Payload)
+	return resp.Payload, nil
 }
 
-// Volumes Use gocoprhd to get the list of volumes
-func (c *CoprHDClient) Volumes() ([]string, error) {
+// AsyncTask to CoprHD
+func (c *CoprHDClient) AsyncTask(task *apimodels.Task) (*apimodels.Task, error) {
+
+	// This process will run and clockwise, giving tasks 10 minutes to finish
+	// tic, tac...
+	// TODO: Make the timeout value configurable?
+	timeout := make(chan bool, 1)
+	go func() {
+		time.Sleep(10 * time.Minute)
+		timeout <- true
+	}()
+
+	// We create two channels to monitor error and status of the task...
+	successCh := make(chan *apimodels.Task, 1)
+	errorCh := make(chan error, 1)
+	go func(task *apimodels.Task) {
+		log.Info("->AsyncTask(): Waiting for Task to Complete...")
+
+		for {
+
+			taskInfo, err := c.Task(task.ID)
+			if err != nil {
+				errorCh <- goof.Newf("->AsyncTask(): %#v", err)
+				return
+			}
+
+			if taskInfo.Progress == 100 {
+				successCh <- taskInfo
+				return
+			}
+
+			time.Sleep(10 * time.Second)
+		}
+	}(task)
+
+	// Monitor for messages in the channel announcing the end of task or error
+	select {
+	case taskDone := <-successCh:
+		log.Infof("->AsyncTask(): Done, %#v", taskDone)
+		return taskDone, nil
+	case err := <-errorCh:
+		return nil, err
+	case <-timeout:
+		return nil, goof.New("->AsyncTask(): Task Timeout")
+	}
+
+}
+
+// ShowVolume ...
+func (c *CoprHDClient) ShowVolume(urnid string) (*apimodels.Volume, error) {
+
+	// Create the Request Parameters
+	showVolumeParams := apiblock.NewShowVolumeParams().WithID(urnid)
+
+	// Send the request
+	resp, err := c.client.Block.ShowVolume(showVolumeParams, c.authInfo)
+	if err != nil {
+		return nil, goof.Newf("->ShowVolume(): %#v", err)
+	}
+	return resp.Payload, nil
+}
+
+// ListVolumes Use gocoprhd to get the list of volumes
+func (c *CoprHDClient) ListVolumes() (*apimodels.Volumes, error) {
+	// This method doesn't requires any parameter.
 	resp, err := c.client.Block.ListVolumes(nil, c.authInfo)
 	if err != nil {
 		return nil, goof.Newf("->ListVolumes(), %v", err)
 	}
-	return resp.Payload.ID, nil
+	return resp.Payload, nil
+}
+
+// CreateVolume Use gocoprhd to create volume
+func (c *CoprHDClient) CreateVolume(name string, sizeGB string) (*apimodels.Volume, error) {
+
+	// Create the request Parameters
+	body := &apimodels.CreateVolume{
+		ConsistencyGroup: "",
+		Count:            1,
+		Name:             name,
+		Size:             sizeGB + "GB",
+		Project:          c.config.Project(),
+		Varray:           c.config.VArray(),
+		Vpool:            c.config.VPool(),
+	}
+
+	// Create the New Params and Populate the Body
+	CreateVolumeParams := apiblock.NewCreateVolumeParams().WithBody(body)
+
+	//use any function to do REST operations
+	resp, err := c.client.Block.CreateVolume(CreateVolumeParams, c.authInfo)
+	if err != nil {
+		return nil, goof.Newf("->CreateVolume(): %v", err)
+	}
+
+	// AsyncTask check status progress bar...
+	// We always create one volume per time, but the driver supports bulk creation..
+	// Therefore each volume part of the bulk has his own task...
+	task, terr := c.AsyncTask(resp.Payload.Task[0])
+	if terr != nil {
+		return nil, goof.Newf("->CreateVolumeSnapshot(), %v", terr)
+	}
+
+	return c.ShowVolume(task.Resource.ID)
+}
+
+// CreateVolumeSnapshot Use gocoprhd to get the list of volumes
+// <- VolumeSnapshot ...
+func (c *CoprHDClient) CreateVolumeSnapshot(snapname string, volumeid string) (*apimodels.Snapshot, error) {
+
+	// Create the request Parameters
+	body := &apimodels.CreateVolumeSnapshot{
+		Name:           snapname,
+		CreateInactive: true,
+		ReadOnly:       false,
+	}
+
+	// Create Object to Request
+	createVolumeSnapshotParams := apiblock.NewCreateVolumeSnapshotParams().WithID(volumeid).WithBody(body)
+
+	//use any function to do REST operations
+	// This method doesn't requires any parameter.
+	resp, err := c.client.Block.CreateVolumeSnapshot(createVolumeSnapshotParams, c.authInfo)
+	log.Infof("->CreateVolumeSnapshot(): %#v", resp.Payload)
+	if err != nil {
+		return nil, goof.Newf("->CreateVolumeSnapshot(), %v", err)
+	}
+
+	task, terr := c.AsyncTask(resp.Payload)
+	if terr != nil {
+		return nil, goof.Newf("->CreateVolumeSnapshot(), %v", err)
+	}
+
+	return c.ShowSnapshot(task.Resource.ID)
+}
+
+// CreateSnapshotFullCopy Use gocoprhd to get the list of volumes
+// <- VolumeCreateFromSnapshot
+func (c *CoprHDClient) CreateSnapshotFullCopy(volname string, snapid string) (*apimodels.Volume, error) {
+
+	// Construct Request Parameters
+	body := &apimodels.CreateSnapshotFullCopy{
+		Count:          1,
+		Name:           volname,
+		CreateInactive: false,
+		Type:           "rp",
+	}
+
+	// Create Object to Request
+	createSnapshotFullCopyParams := apiblock.NewCreateSnapshotFullCopyParams().WithID(snapid).WithBody(body)
+
+	//use any function to do REST operations
+	resp, err := c.client.Block.CreateSnapshotFullCopy(createSnapshotFullCopyParams, c.authInfo)
+	log.Infof("->CreateVolumeSnapshot(): %#v", resp.Payload)
+	if err != nil {
+		return nil, goof.Newf("->CreateVolumeSnapshot(), %v", err)
+	}
+
+	task, terr := c.AsyncTask(resp.Payload)
+	if terr != nil {
+		return nil, goof.Newf("->CreateVolumeSnapshot(), %v", err)
+	}
+
+	return c.ShowVolume(task.Resource.ID)
 }
