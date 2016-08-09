@@ -36,6 +36,10 @@ import:
   - package: github.com/emccode/goisilon
     ref:     f9b53f0aaadb12a26b134830142fc537f492cb13
 
+### CoprHD
+  - package: github.com/victorock/gocoprhd
+    ref:     c7cb77a3611b7f060fe1f2f23fccbf94c86cf14f
+
 ################################################################################
 ##                             Build System Tools                             ##
 ################################################################################
