@@ -7,11 +7,14 @@ import (
 
 	log "github.com/Sirupsen/logrus"
 	"github.com/akutz/goof"
+	"github.com/emccode/libstorage/api/types"
 	runtime "github.com/go-openapi/runtime"
-	httpclient "github.com/go-openapi/runtime/client"
+	runtransport "github.com/go-openapi/runtime/client"
 	"github.com/go-openapi/strfmt"
 	apiclient "github.com/victorock/gocoprhd/client"
+	apiauth "github.com/victorock/gocoprhd/client/authentication"
 	apiblock "github.com/victorock/gocoprhd/client/block"
+	apicompute "github.com/victorock/gocoprhd/client/compute"
 	apivdc "github.com/victorock/gocoprhd/client/vdc"
 	apimodels "github.com/victorock/gocoprhd/models"
 )
@@ -19,9 +22,14 @@ import (
 //CoprHDClient ...
 type CoprHDClient struct {
 	config    *CoprHDClientConfig
-	transport *httpclient.Runtime
+	transport *runtransport.Runtime
 	authInfo  runtime.ClientAuthInfoWriter
 	client    *apiclient.CoprHD
+	block     *apiblock.Client
+	vdc       *apivdc.Client
+	compute   *apicompute.Client
+	auth      *apiauth.Client
+	//file    *apifile.Client
 }
 
 //NewClient ...
@@ -71,6 +79,10 @@ func (c *CoprHDClient) Init() (*CoprHDClient, error) {
 
 	// create the API client, with the transport
 	c.client = apiclient.New(c.transport, strfmt.Default)
+	c.auth = c.client.Authentication
+	c.block = c.client.Block
+	c.vdc = c.client.Vdc
+	c.compute = c.client.Compute
 
 	log.Info("CoprHD Client: Initialized")
 	return c, nil
@@ -82,7 +94,7 @@ func (c *CoprHDClient) Endpoint() (*CoprHDClient, error) {
 		return nil, goof.New("->Endpoint(): Endpoint if not configured.")
 	}
 	// Set the driver Endpoint
-	c.transport = httpclient.New(c.config.Endpoint(), "/", []string{"https"})
+	c.transport = runtransport.New(c.config.Endpoint(), "/", []string{"https"})
 	return c, nil
 }
 
@@ -108,10 +120,7 @@ func (c *CoprHDClient) Authentication() (*CoprHDClient, error) {
 	}
 
 	// Set Authentication Info
-	authInfo := httpclient.BasicAuth(c.config.Username(), c.config.Password())
-
-	// Set Pointer
-	c.authInfo = authInfo
+	c.authInfo = runtransport.BasicAuth(c.config.Username(), c.config.Password())
 
 	return c, nil
 }
@@ -121,7 +130,7 @@ func (c *CoprHDClient) Token() (*CoprHDClient, error) {
 
 	// Initialize the Driver Token Header
 	if c.config.Token() != "" {
-		authInfo := httpclient.APIKeyAuth("X-SDS-AUTH-TOKEN", "header", c.config.Token())
+		authInfo := runtransport.APIKeyAuth("X-SDS-AUTH-TOKEN", "header", c.config.Token())
 		// Populate the Header with the token from now on
 		c.authInfo = authInfo
 	}
@@ -133,13 +142,13 @@ func (c *CoprHDClient) Token() (*CoprHDClient, error) {
 func (c *CoprHDClient) Login() (*CoprHDClient, error) {
 
 	// Initialize the Driver Login Method
-	login, err := c.client.Authentication.Login(nil, c.authInfo)
+	login, err := c.auth.Login(nil, c.authInfo)
 	if err != nil {
 		return nil, goof.Newf("->Login(), %v", err)
 	}
 
 	// Populate the Header with the token from now on
-	c.authInfo = httpclient.APIKeyAuth("X-SDS-AUTH-TOKEN", "header", login.XSDSAUTHTOKEN)
+	c.authInfo = runtransport.APIKeyAuth("X-SDS-AUTH-TOKEN", "header", login.XSDSAUTHTOKEN)
 	log.Info("CoprHD Client: Login()")
 	return c, nil
 }
@@ -151,7 +160,7 @@ func (c *CoprHDClient) Task(taskID string) (*apimodels.Task, error) {
 	showTaskParams := apivdc.NewShowTaskParams().WithID(taskID)
 
 	//use any function to do REST operations
-	resp, err := c.client.Vdc.ShowTask(showTaskParams, authInfo)
+	resp, err := c.vdc.ShowTask(showTaskParams, authInfo)
 	if err != nil {
 		return nil, goof.Newf("->Task(), %#v", err)
 	}
@@ -208,31 +217,34 @@ func (c *CoprHDClient) AsyncTask(task *apimodels.Task) (*apimodels.Task, error) 
 
 }
 
-// ShowVolume ...
-func (c *CoprHDClient) ShowVolume(urnid string) (*apimodels.Volume, error) {
-
-	// Create the Request Parameters
-	showVolumeParams := apiblock.NewShowVolumeParams().WithID(urnid)
-
-	// Send the request
-	resp, err := c.client.Block.ShowVolume(showVolumeParams, c.authInfo)
-	if err != nil {
-		return nil, goof.Newf("->ShowVolume(): %#v", err)
-	}
-	return resp.Payload, nil
-}
-
 // ListVolumes Use gocoprhd to get the list of volumes
+// <- Volumes
 func (c *CoprHDClient) ListVolumes() (*apimodels.Volumes, error) {
 	// This method doesn't requires any parameter.
-	resp, err := c.client.Block.ListVolumes(nil, c.authInfo)
+	resp, err := c.block.ListVolumes(nil, c.authInfo)
 	if err != nil {
 		return nil, goof.Newf("->ListVolumes(), %v", err)
 	}
 	return resp.Payload, nil
 }
 
+// ShowVolume Show details about the volume
+// <- VolumeInspect
+func (c *CoprHDClient) ShowVolume(volid string) (*apimodels.Volume, error) {
+
+	// Create the Request Parameters
+	showVolumeParams := apiblock.NewShowVolumeParams().WithID(volid)
+
+	// Send the request
+	resp, err := c.block.ShowVolume(showVolumeParams, c.authInfo)
+	if err != nil {
+		return nil, goof.Newf("->ShowVolume(): %#v", err)
+	}
+	return resp.Payload, nil
+}
+
 // CreateVolume Use gocoprhd to create volume
+// <- VolumeCreate
 func (c *CoprHDClient) CreateVolume(name string, sizeGB string) (*apimodels.Volume, error) {
 
 	// Create the request Parameters
@@ -250,7 +262,7 @@ func (c *CoprHDClient) CreateVolume(name string, sizeGB string) (*apimodels.Volu
 	CreateVolumeParams := apiblock.NewCreateVolumeParams().WithBody(body)
 
 	//use any function to do REST operations
-	resp, err := c.client.Block.CreateVolume(CreateVolumeParams, c.authInfo)
+	resp, err := c.block.CreateVolume(CreateVolumeParams, c.authInfo)
 	if err != nil {
 		return nil, goof.Newf("->CreateVolume(): %v", err)
 	}
@@ -266,8 +278,67 @@ func (c *CoprHDClient) CreateVolume(name string, sizeGB string) (*apimodels.Volu
 	return c.ShowVolume(task.Resource.ID)
 }
 
-// CreateVolumeSnapshot Use gocoprhd to get the list of volumes
-// <- VolumeSnapshot ...
+// CreateSnapshotFullCopy Use gocoprhd to get the list of volumes
+// <- VolumeCreateFromSnapshot
+func (c *CoprHDClient) CreateSnapshotFullCopy(snapid string, volname string) (*apimodels.Volume, error) {
+
+	// Construct Request Parameters
+	body := &apimodels.CreateSnapshotFullCopy{
+		Count:          1,
+		Name:           volname,
+		CreateInactive: false,
+		Type:           "rp",
+	}
+
+	// Create Object to Request
+	createSnapshotFullCopyParams := apiblock.NewCreateSnapshotFullCopyParams().WithID(snapid).WithBody(body)
+
+	//use any function to do REST operations
+	resp, err := c.block.CreateSnapshotFullCopy(createSnapshotFullCopyParams, c.authInfo)
+	log.Infof("->CreateSnapshotFullCopy(): %#v", resp.Payload)
+	if err != nil {
+		return nil, goof.Newf("->CreateSnapshotFullCopy(), %v", err)
+	}
+
+	// Monitor the progress bar...
+	task, terr := c.AsyncTask(resp.Payload)
+	if terr != nil {
+		return nil, goof.Newf("->CreateSnapshotFullCopy(), %v", err)
+	}
+
+	return c.ShowVolume(task.Resource.ID)
+}
+
+//CreateVolumeFullCopy <- VolumeCopy
+func (c *CoprHDClient) CreateVolumeFullCopy(volid string, volname string) (*apimodels.Volume, error) {
+
+	// Construct Request Parameters
+	body := &apimodels.CreateVolumeFullCopy{
+		Count:          1,
+		Name:           volname,
+		CreateInactive: false,
+		Type:           "",
+	}
+
+	// Create Object to Request
+	createVolumeFullCopyParams := apiblock.NewCreateVolumeFullCopyParams().WithID(volid).WithBody(body)
+
+	//use any function to do REST operations
+	resp, err := c.block.CreateVolumeFullCopy(createVolumeFullCopyParams, c.authInfo)
+	if err != nil {
+		return nil, goof.Newf("->CreateVolumeFullCopy(), %v", err)
+	}
+
+	// Monitor the progress bar...
+	task, terr := c.AsyncTask(resp.Payload.Task[0])
+	if terr != nil {
+		return nil, goof.Newf("->CreateVolumeFullCopy(), %v", terr)
+	}
+
+	return c.ShowVolume(task.Resource.ID)
+}
+
+// CreateVolumeSnapshot <- VolumeSnapshot
 func (c *CoprHDClient) CreateVolumeSnapshot(snapname string, volumeid string) (*apimodels.Snapshot, error) {
 
 	// Create the request Parameters
@@ -282,46 +353,110 @@ func (c *CoprHDClient) CreateVolumeSnapshot(snapname string, volumeid string) (*
 
 	//use any function to do REST operations
 	// This method doesn't requires any parameter.
-	resp, err := c.client.Block.CreateVolumeSnapshot(createVolumeSnapshotParams, c.authInfo)
+	resp, err := c.block.CreateVolumeSnapshot(createVolumeSnapshotParams, c.authInfo)
 	log.Infof("->CreateVolumeSnapshot(): %#v", resp.Payload)
 	if err != nil {
 		return nil, goof.Newf("->CreateVolumeSnapshot(), %v", err)
 	}
 
-	task, terr := c.AsyncTask(resp.Payload)
+	// This task is async so we need to monitor the progress bar...
+	task, terr := c.AsyncTask(resp.Payload.Task[0])
 	if terr != nil {
-		return nil, goof.Newf("->CreateVolumeSnapshot(), %v", err)
+		return nil, goof.Newf("->CreateVolumeSnapshot(), %v", terr)
 	}
 
 	return c.ShowSnapshot(task.Resource.ID)
 }
 
-// CreateSnapshotFullCopy Use gocoprhd to get the list of volumes
-// <- VolumeCreateFromSnapshot
-func (c *CoprHDClient) CreateSnapshotFullCopy(volname string, snapid string) (*apimodels.Volume, error) {
-
-	// Construct Request Parameters
-	body := &apimodels.CreateSnapshotFullCopy{
-		Count:          1,
-		Name:           volname,
-		CreateInactive: false,
-		Type:           "rp",
-	}
+// DeleteVolume <- VolumeRemove
+func (c *CoprHDClient) DeleteVolume(volid string) (*apimodels.Volume, error) {
 
 	// Create Object to Request
-	createSnapshotFullCopyParams := apiblock.NewCreateSnapshotFullCopyParams().WithID(snapid).WithBody(body)
+	deleteVolumeParams := apiblock.NewDeleteVolumeParams().WithID(volid)
 
 	//use any function to do REST operations
-	resp, err := c.client.Block.CreateSnapshotFullCopy(createSnapshotFullCopyParams, c.authInfo)
-	log.Infof("->CreateVolumeSnapshot(): %#v", resp.Payload)
+	resp, err := c.block.DeleteVolume(deleteVolumeParams, c.authInfo)
+	log.Infof("->DeleteVolume(): %#v", resp.Payload)
 	if err != nil {
-		return nil, goof.Newf("->CreateVolumeSnapshot(), %v", err)
+		return nil, goof.Newf("->DeleteVolume(), %v", err)
 	}
 
-	task, terr := c.AsyncTask(resp.Payload)
+	// Monitor the progress bar...
+	task, terr := c.AsyncTask(resp.Payload.Task[0])
 	if terr != nil {
-		return nil, goof.Newf("->CreateVolumeSnapshot(), %v", err)
+		return nil, goof.Newf("->DeleteVolume(), %v", terr)
 	}
 
 	return c.ShowVolume(task.Resource.ID)
+}
+
+// ListVolumeExports ... List Exports of a Volume
+func (c *CoprHDClient) ListVolumeExports(volID string) ([]*apimodels.VolumeExports, error) {
+
+	// Create the request
+	listVolumeExportsParams := apiblock.NewListVolumeExportsParams().WithID(volID)
+
+	//use any function to do REST operations
+	resp, err := c.block.ListVolumeExports(listVolumeExportsParams, authInfo)
+	if err != nil {
+		return nil, goof.Newf("->ListVolumeExports(), %v", err)
+	}
+
+	return resp.Payload.Itl, nil
+}
+
+// CreateExport <-> VolumeAttach
+func (c *CoprHDClient) CreateExport(name string, hostsID []string, volID string) ([]*apimodels.VolumeExports, error) {
+
+	// Construct Request Parameters
+	body := &apimodels.CreateExport{
+		Project: c.config.Project(),
+		Varray:  c.config.VArray(),
+		Name:    name,
+		Type:    "Host",
+		Hosts:   hostsID,
+		Volumes: []*models.CreateExportVolumesItems0{
+			&models.CreateExportVolumesItems0{
+				ID: volID,
+			},
+		},
+	}
+
+	// Create Object to Request
+	createExportParams := apicompute.NewCreateExportParams().WithBody(body)
+
+	//use any function to do REST operations
+	resp, err := c.compute.CreateExport(createExportParams, authInfo)
+	log.Infof("->CreateExport(): %#v", resp.Payload)
+	if err != nil {
+		return nil, goof.Newf("->CreateExport(), %v", err)
+	}
+
+	// Monitor the progress bar...
+	task, terr := c.AsyncTask(resp.Payload.Task[0])
+	if terr != nil {
+		return nil, goof.Newf("->CreateExport(), %v", terr)
+	}
+
+	return c.ListVolumeExports()
+}
+
+// DeleteExport <-> VolumeDetach
+func (c *CoprHDClient) DeleteExport() (*apimodels.Volume, error) {}
+
+// Snapshots <-> Snapshots
+func (c *CoprHDClient) Snapshots() (*apimodels.Volume, error) {
+
+}
+
+// ShowSnapshot <-> SnapshotInspect
+func (c *CoprHDClient) ShowSnapshot() (*apimodels.Volume, error) {}
+
+// CreateSnapshotCopy <-> SnapshotCopy
+func (c *CoprHDClient) CreateSnapshotCopy() (*apimodels.Snapshot, error) {
+	return nil, types.ErrNotImplemented
+}
+
+// DeleteSnapshot <-> SnapshotRemove
+func (c *CoprHDClient) DeleteSnapshot() (*apimodels.Volume, error) {
 }
